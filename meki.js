@@ -1,7 +1,7 @@
 "use strict";
 
 /* ===== Semua teks, ikon, dan tampilan dirender dari sini ===== */
-const IMG = "meki.png"; // taruh file meki.png di folder yang sama
+const IMG = "meki.png"; 
 const imgTag = (cls, alt) =>
   `<img class="${cls}" src="${IMG}" alt="${alt}" onerror="this.style.display='none'">`;
 
@@ -95,10 +95,10 @@ const UI = `
 document.getElementById("app").innerHTML = UI;
 
 /* ===== Logic ===== */
-// PERUBAHAN UTAMA: Mengarahkan ke proxy Vercel kita sendiri
-const API = "/api/proxy?path="; 
+// MENGARAHKAN KE PROXY VERCEL
+const API = "/api/proxy"; 
 const $ = id => document.getElementById(id);
-const STORE = "meki_temp_mail_v4_current";
+const STORE = "meki_temp_mail_tempmail_lol";
 const DAY = 24 * 60 * 60 * 1000;
 const state = { account: null, emails: [], auto: null, busy: false, refreshing: false, activeId: null, expiryTicker: null };
 
@@ -140,7 +140,7 @@ function expireInbox() {
   $("expiryTimer").textContent = "EXPIRED";
   $("generateBtn").disabled = false; $("newBtn").disabled = false;
   setConnection("bad", "INBOX EXPIRED");
-  setStatus("Masa aktif 24 jam selesai. Token inbox lokal telah dihapus. Buat email baru untuk melanjutkan.");
+  setStatus("Masa aktif 24 jam selesai. Buat email baru untuk melanjutkan.");
   notify("Email kedaluwarsa. Silakan generate email baru.");
 }
 function startExpiryTicker() {
@@ -158,7 +158,7 @@ function startAutoRefresh() {
 function expireIfNeeded() { if (state.account && remainingMs() <= 0) { expireInbox(); return true; } return false; }
 
 function textOf(m) {
-  if (m.body || m.text) return String(m.body || m.text);
+  if (m.body) return String(m.body);
   if (m.html) { const doc = new DOMParser().parseFromString(m.html, "text/html"); return doc.body.textContent || ""; }
   return "";
 }
@@ -207,42 +207,37 @@ function safeEmailHTML(html) {
   return [...doc.body.childNodes].map(clean).join("");
 }
 
-// PERUBAHAN UTAMA: Fungsi request yang sudah disesuaikan dengan Proxy Vercel
+// Fungsi request yang sudah disesuaikan dengan Proxy
 async function request(path, opts = {}) {
   let res;
+  const fullUrl = API + path;
   
-  // Encode path agar aman masuk ke query parameter (?path=...)
-  const safePath = encodeURIComponent(path);
-  const fullUrl = API + safePath;
-
   try {
     res = await fetch(fullUrl, { 
-      ...opts, 
-      mode: 'cors',
-      headers: { 
-        "Accept": "application/json", 
-        ...(opts.body ? { "Content-Type": "application/json" } : {}), 
-        ...(opts.headers || {}) 
-      } 
+        ...opts, 
+        headers: { 
+            "Accept": "application/json", 
+            ...(opts.body ? { "Content-Type": "application/json" } : {}), 
+            ...(opts.headers || {}) 
+        } 
     });
   } catch (e) {
-    throw new Error("Tidak dapat menjangkau API Proxy. Pastikan server Vercel berjalan dan koneksi internet stabil. " + e.message);
+    throw new Error("Gagal terhubung ke server proxy. " + e.message);
   }
   
   let data = {}; 
   try { data = await res.json(); } catch {}
   
   if (!res.ok) {
-    const err = new Error(data?.["hydra:description"] || data?.message || data?.detail || data?.error || ("HTTP " + res.status));
+    const err = new Error(data?.error?.message || data?.message || data?.detail || ("HTTP " + res.status));
     err.status = res.status; 
     throw err;
   }
   return data;
 }
 
-const members = d => Array.isArray(d) ? d : (d?.["hydra:member"] || d?.member || []);
 const rand = (n, chars = "abcdefghijklmnopqrstuvwxyz0123456789") => Array.from(crypto.getRandomValues(new Uint32Array(n)), v => chars[v % chars.length]).join("");
-const fmtFrom = f => f ? (f.name ? f.name + " <" + f.address + ">" : (f.address || "")) : "";
+
 function persist() {
   try { localStorage.setItem(STORE, JSON.stringify({ account: state.account, emails: state.emails })); }
   catch { setStatus("Penyimpanan browser penuh atau dinonaktifkan."); }
@@ -259,33 +254,40 @@ function renderStats() {
 }
 function renderEmails() {
   const q = $("searchMail").value.trim().toLowerCase();
-  const arr = state.emails.filter(m => [m.subject, m.from, m.to, textOf(m)].join(" ").toLowerCase().includes(q));
+  const arr = state.emails.filter(m => [m.subject, m.from, textOf(m)].join(" ").toLowerCase().includes(q));
   $("messageList").innerHTML = arr.length
     ? arr.map((m, i) => `<div class="mailrow" data-id="${escapeHTML(String(m.id ?? i))}"><div class="mailicon"><i class="fa-regular fa-envelope"></i></div><div class="mailinfo"><b>${escapeHTML(m.subject || "(Tanpa subjek)")}</b><span>${escapeHTML(m.from || "Pengirim tidak diketahui")} · ${escapeHTML(textOf(m).slice(0, 90))}</span></div><div class="mailtime">${timeText(m.date)}</div></div>`).join("")
     : EMPTY_HTML(!!state.account);
   $("messageList").querySelectorAll(".mailrow").forEach(row => row.addEventListener("click", () => openEmail(row.dataset.id)));
 }
+
 async function createInbox() {
   if (state.busy) return;
   const prefix = $("prefix").value.trim().toLowerCase();
   if (prefix && !/^[a-z0-9_-]{3,24}$/.test(prefix)) { notify("Username 3–24 karakter: huruf, angka, _ atau -"); return; }
+  
   state.busy = true; $("generateBtn").disabled = true; $("newBtn").disabled = true;
   $("generateBtn").innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Creating...';
-  setStatus("Menghubungkan ke TempMail API via Proxy...");
+  setStatus("Menghubungkan ke TempMail API...");
+  
   try {
-    const domain = members(await request("/domains")).find(d => d.isActive !== false)?.domain;
-    if (!domain) throw new Error("Tidak ada domain tersedia dari provider.");
-    const address = (prefix || rand(10)) + "@" + domain, password = rand(20);
-    await request("/accounts", { method: "POST", body: JSON.stringify({ address, password }) });
-    const tk = await request("/token", { method: "POST", body: JSON.stringify({ address, password }) });
-    if (!tk.token) throw new Error("Respons provider tidak berisi token.");
-    const data = { address, token: tk.token };
+    // Endpoint tempmail.lol untuk buat inbox baru
+    const res = await request("/api/inboxes", { method: "POST" });
+    
+    // Response dari tempmail.lol: { address: "...", token: "..." }
+    if (!res.address || !res.token) throw new Error("Respons provider tidak valid.");
+    
     stopTimers();
     const created = Date.now();
-    state.account = { address: data.address, token: data.token, created_at: created, expires_at: created + DAY };
+    state.account = { 
+        address: res.address, 
+        token: res.token, 
+        created_at: created, 
+        expires_at: created + DAY 
+    };
     state.emails = []; state.activeId = null; $("prefix").value = "";
     persist(); renderAddress(); renderEmails(); renderStats(); $("detail").innerHTML = "";
-    setConnection("ok", "API CONNECTED"); setStatus("Inbox berhasil dibuat. Hitung mundur 24 jam dimulai.");
+    setConnection("ok", "API CONNECTED"); setStatus("Inbox berhasil dibuat.");
     startAutoRefresh(); await refreshInbox(true); notify("Email berhasil dibuat.");
   } catch (e) {
     setConnection("bad", "API ERROR"); setStatus(e.message); notify("Generate gagal: " + e.message);
@@ -294,30 +296,42 @@ async function createInbox() {
     $("generateBtn").innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> Generate email';
   }
 }
+
 async function refreshInbox(silent = false) {
   if (expireIfNeeded()) return;
   if (!state.account) { if (!silent) notify("Generate email dulu."); return; }
   if (state.refreshing) return;
   state.refreshing = true;
   try {
-    const auth = { headers: { Authorization: "Bearer " + state.account.token } };
-    const list = members(await request("/messages?page=1", auth));
+    // Endpoint tempmail.lol untuk cek inbox (menggunakan token)
+    const res = await request("/api/inboxes/" + state.account.token + "/emails");
+    
+    // Response tempmail.lol: array of emails
+    const list = Array.isArray(res) ? res : (res.emails || []);
     const known = new Map(state.emails.map(m => [String(m.id), m]));
     const fresh = list.filter(m => !known.has(String(m.id)));
-    const fulls = await Promise.all(fresh.map(m => request("/messages/" + encodeURIComponent(m.id), auth).catch(() => null)));
-    fresh.forEach((m, i) => {
-      const f = fulls[i] || {};
-      known.set(String(m.id), { id: m.id, from: fmtFrom(m.from), to: (m.to || []).map(t => t.address).join(", "), subject: m.subject || "", date: m.createdAt, text: f.text || m.intro || "", html: Array.isArray(f.html) ? f.html.join("") : (f.html || "") });
+    
+    fresh.forEach(m => {
+      known.set(String(m.id), { 
+        id: m.id, 
+        from: m.from, 
+        subject: m.subject || "", 
+        date: m.date || m.created_at, 
+        text: m.body || "", 
+        html: m.html || "" 
+      });
     });
+
     state.emails = [...known.values()].sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
     persist(); renderEmails(); renderStats();
     setConnection("ok", "API CONNECTED"); setStatus("Inbox diperbarui · " + new Date().toLocaleTimeString("id-ID"));
     if (!silent) notify("Inbox diperbarui.");
   } catch (e) {
-    if (e.status === 401) { expireInbox(); return; }
+    if (e.status === 401 || e.status === 403) { expireInbox(); return; }
     setConnection("bad", "API ERROR"); setStatus(e.message); if (!silent) notify("Refresh gagal: " + e.message);
   } finally { state.refreshing = false; }
 }
+
 function openEmail(id) {
   const m = state.emails.find((x, i) => String(x.id ?? i) === String(id)); if (!m) return;
   state.activeId = id;
@@ -327,7 +341,7 @@ function openEmail(id) {
     : escapeHTML(body || "Isi email kosong.").replace(/(https?:\/\/[^\s<]+)/gi, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
   $("detail").innerHTML = `<article class="detail">
    <div style="display:flex;justify-content:space-between;gap:10px"><h3>${escapeHTML(m.subject || "(Tanpa subjek)")}</h3><button class="btn" id="closeDetail" aria-label="Tutup"><i class="fa-solid fa-xmark"></i></button></div>
-   <div class="meta">FROM: ${escapeHTML(m.from || "-")}<br>TO: ${escapeHTML(m.to || state.account?.address || "-")}<br>DATE: ${escapeHTML(dateText(m.date))}</div>
+   <div class="meta">FROM: ${escapeHTML(m.from || "-")}<br>DATE: ${escapeHTML(dateText(m.date))}</div>
    <div class="body">${renderedBody}</div>
    <div class="extract">
     <h4>DETECTED OTP</h4>
