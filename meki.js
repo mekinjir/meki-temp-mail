@@ -95,7 +95,9 @@ const UI = `
 document.getElementById("app").innerHTML = UI;
 
 /* ===== Logic ===== */
-const API = "https://api.mail.tm", $ = id => document.getElementById(id);
+// PERUBAHAN UTAMA: Mengarahkan ke proxy Vercel kita sendiri
+const API = "/api/proxy?path="; 
+const $ = id => document.getElementById(id);
 const STORE = "meki_temp_mail_v4_current";
 const DAY = 24 * 60 * 60 * 1000;
 const state = { account: null, emails: [], auto: null, busy: false, refreshing: false, activeId: null, expiryTicker: null };
@@ -204,20 +206,40 @@ function safeEmailHTML(html) {
   }
   return [...doc.body.childNodes].map(clean).join("");
 }
+
+// PERUBAHAN UTAMA: Fungsi request yang sudah disesuaikan dengan Proxy Vercel
 async function request(path, opts = {}) {
   let res;
+  
+  // Encode path agar aman masuk ke query parameter (?path=...)
+  const safePath = encodeURIComponent(path);
+  const fullUrl = API + safePath;
+
   try {
-    res = await fetch(API + path, { ...opts, headers: { "Accept": "application/json", ...(opts.body ? { "Content-Type": "application/json" } : {}), ...(opts.headers || {}) } });
+    res = await fetch(fullUrl, { 
+      ...opts, 
+      mode: 'cors',
+      headers: { 
+        "Accept": "application/json", 
+        ...(opts.body ? { "Content-Type": "application/json" } : {}), 
+        ...(opts.headers || {}) 
+      } 
+    });
   } catch (e) {
-    throw new Error("Tidak dapat menjangkau mail.tm API (cek koneksi internet). " + e.message);
+    throw new Error("Tidak dapat menjangkau API Proxy. Pastikan server Vercel berjalan dan koneksi internet stabil. " + e.message);
   }
-  let data = {}; try { data = await res.json(); } catch {}
+  
+  let data = {}; 
+  try { data = await res.json(); } catch {}
+  
   if (!res.ok) {
-    const err = new Error(data?.["hydra:description"] || data?.message || data?.detail || ("HTTP " + res.status));
-    err.status = res.status; throw err;
+    const err = new Error(data?.["hydra:description"] || data?.message || data?.detail || data?.error || ("HTTP " + res.status));
+    err.status = res.status; 
+    throw err;
   }
   return data;
 }
+
 const members = d => Array.isArray(d) ? d : (d?.["hydra:member"] || d?.member || []);
 const rand = (n, chars = "abcdefghijklmnopqrstuvwxyz0123456789") => Array.from(crypto.getRandomValues(new Uint32Array(n)), v => chars[v % chars.length]).join("");
 const fmtFrom = f => f ? (f.name ? f.name + " <" + f.address + ">" : (f.address || "")) : "";
@@ -249,7 +271,7 @@ async function createInbox() {
   if (prefix && !/^[a-z0-9_-]{3,24}$/.test(prefix)) { notify("Username 3–24 karakter: huruf, angka, _ atau -"); return; }
   state.busy = true; $("generateBtn").disabled = true; $("newBtn").disabled = true;
   $("generateBtn").innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Creating...';
-  setStatus("Menghubungkan ke TempMail API...");
+  setStatus("Menghubungkan ke TempMail API via Proxy...");
   try {
     const domain = members(await request("/domains")).find(d => d.isActive !== false)?.domain;
     if (!domain) throw new Error("Tidak ada domain tersedia dari provider.");
