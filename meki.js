@@ -95,7 +95,7 @@ const UI = `
 document.getElementById("app").innerHTML = UI;
 
 /* ===== Logic ===== */
-const API = "https://api.tempmail.lol/v3", $ = id => document.getElementById(id);
+const API = "https://api.mail.tm", $ = id => document.getElementById(id);
 const STORE = "meki_temp_mail_v4_current";
 const DAY = 24 * 60 * 60 * 1000;
 const state = { account: null, emails: [], auto: null, busy: false, refreshing: false, activeId: null, expiryTicker: null };
@@ -209,12 +209,18 @@ async function request(path, opts = {}) {
   try {
     res = await fetch(API + path, { ...opts, headers: { "Accept": "application/json", ...(opts.body ? { "Content-Type": "application/json" } : {}), ...(opts.headers || {}) } });
   } catch (e) {
-    throw new Error("Tidak dapat menjangkau TempMail API (cek koneksi internet, atau API memblokir akses langsung dari browser). " + e.message);
+    throw new Error("Tidak dapat menjangkau mail.tm API (cek koneksi internet). " + e.message);
   }
   let data = {}; try { data = await res.json(); } catch {}
-  if (!res.ok) throw new Error(data?.error?.message || data?.error || data?.message || ("HTTP " + res.status));
+  if (!res.ok) {
+    const err = new Error(data?.["hydra:description"] || data?.message || data?.detail || ("HTTP " + res.status));
+    err.status = res.status; throw err;
+  }
   return data;
 }
+const members = d => Array.isArray(d) ? d : (d?.["hydra:member"] || d?.member || []);
+const rand = (n, chars = "abcdefghijklmnopqrstuvwxyz0123456789") => Array.from(crypto.getRandomValues(new Uint32Array(n)), v => chars[v % chars.length]).join("");
+const fmtFrom = f => f ? (f.name ? f.name + " <" + f.address + ">" : (f.address || "")) : "";
 function persist() {
   try { localStorage.setItem(STORE, JSON.stringify({ account: state.account, emails: state.emails })); }
   catch { setStatus("Penyimpanan browser penuh atau dinonaktifkan."); }
@@ -245,9 +251,13 @@ async function createInbox() {
   $("generateBtn").innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Creating...';
   setStatus("Menghubungkan ke TempMail API...");
   try {
-    const body = {}; if (prefix) body.prefix = prefix;
-    const data = await request("/inboxes", { method: "POST", body: JSON.stringify(body) });
-    if (!data.address || !data.token) throw new Error("Respons provider tidak berisi address/token.");
+    const domain = members(await request("/domains")).find(d => d.isActive !== false)?.domain;
+    if (!domain) throw new Error("Tidak ada domain tersedia dari provider.");
+    const address = (prefix || rand(10)) + "@" + domain, password = rand(20);
+    await request("/accounts", { method: "POST", body: JSON.stringify({ address, password }) });
+    const tk = await request("/token", { method: "POST", body: JSON.stringify({ address, password }) });
+    if (!tk.token) throw new Error("Respons provider tidak berisi token.");
+    const data = { address, token: tk.token };
     stopTimers();
     const created = Date.now();
     state.account = { address: data.address, token: data.token, created_at: created, expires_at: created + DAY };
@@ -268,17 +278,21 @@ async function refreshInbox(silent = false) {
   if (state.refreshing) return;
   state.refreshing = true;
   try {
-    const data = await request("/inboxes/" + encodeURIComponent(state.account.token) + "/emails?limit=100");
-    if (data.expired) { setStatus("Provider menyatakan inbox sudah kedaluwarsa."); setConnection("bad", "INBOX EXPIRED"); return; }
-    const incoming = Array.isArray(data.emails) ? data.emails : [];
-    const key = (m, i) => String(m.id ?? (m.date + "-" + m.subject + "-" + i));
-    const map = new Map(state.emails.map((m, i) => [key(m, i), m]));
-    incoming.forEach((m, i) => map.set(key(m, i), m));
-    state.emails = [...map.values()].sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+    const auth = { headers: { Authorization: "Bearer " + state.account.token } };
+    const list = members(await request("/messages?page=1", auth));
+    const known = new Map(state.emails.map(m => [String(m.id), m]));
+    const fresh = list.filter(m => !known.has(String(m.id)));
+    const fulls = await Promise.all(fresh.map(m => request("/messages/" + encodeURIComponent(m.id), auth).catch(() => null)));
+    fresh.forEach((m, i) => {
+      const f = fulls[i] || {};
+      known.set(String(m.id), { id: m.id, from: fmtFrom(m.from), to: (m.to || []).map(t => t.address).join(", "), subject: m.subject || "", date: m.createdAt, text: f.text || m.intro || "", html: Array.isArray(f.html) ? f.html.join("") : (f.html || "") });
+    });
+    state.emails = [...known.values()].sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
     persist(); renderEmails(); renderStats();
     setConnection("ok", "API CONNECTED"); setStatus("Inbox diperbarui · " + new Date().toLocaleTimeString("id-ID"));
     if (!silent) notify("Inbox diperbarui.");
   } catch (e) {
+    if (e.status === 401) { expireInbox(); return; }
     setConnection("bad", "API ERROR"); setStatus(e.message); if (!silent) notify("Refresh gagal: " + e.message);
   } finally { state.refreshing = false; }
 }
