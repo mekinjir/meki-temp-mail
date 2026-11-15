@@ -95,7 +95,7 @@ const UI = `
 document.getElementById("app").innerHTML = UI;
 
 /* ===== Logic ===== */
-// MENGARAHKAN KE PROXY VERCEL
+// PERBAIKAN: API mengarah ke proxy Vercel Anda
 const API = "/api/proxy"; 
 const $ = id => document.getElementById(id);
 const STORE = "meki_temp_mail_tempmail_lol";
@@ -107,6 +107,7 @@ const EMPTY_HTML = (hasAccount) => `<div class="empty"><i class="fa-regular fa-e
 function notify(t) { const e = $("toast"); e.textContent = t; e.classList.add("show"); clearTimeout(notify.timer); notify.timer = setTimeout(() => e.classList.remove("show"), 2600); }
 function setConnection(mode, text) { $("led").className = "led " + (mode || ""); $("connectionText").textContent = text; }
 function setStatus(text) { $("apiStatus").textContent = text; }
+// PERBAIKAN: Fungsi escapeHTML dibersihkan agar tidak error
 function escapeHTML(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 function dateText(v) { if (!v) return "-"; const d = new Date(v); return isNaN(d) ? String(v) : d.toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" }); }
 function timeText(v) { if (!v) return ""; const d = new Date(v); return isNaN(d) ? "" : d.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }); }
@@ -207,11 +208,11 @@ function safeEmailHTML(html) {
   return [...doc.body.childNodes].map(clean).join("");
 }
 
-// Fungsi request yang sudah disesuaikan dengan Proxy
+// PERBAIKAN: Fungsi request (menambahkan ?path= agar proxy tahu tujuan)
 async function request(path, opts = {}) {
   let res;
-  const fullUrl = API + path;
-  
+  const fullUrl = API + "?path=" + encodeURIComponent(path);
+
   try {
     res = await fetch(fullUrl, { 
         ...opts, 
@@ -224,10 +225,10 @@ async function request(path, opts = {}) {
   } catch (e) {
     throw new Error("Gagal terhubung ke server proxy. " + e.message);
   }
-  
+
   let data = {}; 
   try { data = await res.json(); } catch {}
-  
+
   if (!res.ok) {
     const err = new Error(data?.error?.message || data?.message || data?.detail || ("HTTP " + res.status));
     err.status = res.status; 
@@ -265,18 +266,17 @@ async function createInbox() {
   if (state.busy) return;
   const prefix = $("prefix").value.trim().toLowerCase();
   if (prefix && !/^[a-z0-9_-]{3,24}$/.test(prefix)) { notify("Username 3–24 karakter: huruf, angka, _ atau -"); return; }
-  
+
   state.busy = true; $("generateBtn").disabled = true; $("newBtn").disabled = true;
   $("generateBtn").innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Creating...';
   setStatus("Menghubungkan ke TempMail API...");
-  
+
   try {
-    // Endpoint tempmail.lol untuk buat inbox baru
-    const res = await request("/api/inboxes", { method: "POST" });
-    
-    // Response dari tempmail.lol: { address: "...", token: "..." }
+    // PERBAIKAN: Endpoint disesuaikan (tanpa "/api" karena sudah ditangani proxy)
+    const res = await request("/inboxes", { method: "POST" });
+
     if (!res.address || !res.token) throw new Error("Respons provider tidak valid.");
-    
+
     stopTimers();
     const created = Date.now();
     state.account = { 
@@ -303,14 +303,13 @@ async function refreshInbox(silent = false) {
   if (state.refreshing) return;
   state.refreshing = true;
   try {
-    // Endpoint tempmail.lol untuk cek inbox (menggunakan token)
-    const res = await request("/api/inboxes/" + state.account.token + "/emails");
-    
-    // Response tempmail.lol: array of emails
+    // PERBAIKAN: Endpoint disesuaikan
+    const res = await request("/inboxes/" + state.account.token + "/emails");
+
     const list = Array.isArray(res) ? res : (res.emails || []);
     const known = new Map(state.emails.map(m => [String(m.id), m]));
     const fresh = list.filter(m => !known.has(String(m.id)));
-    
+
     fresh.forEach(m => {
       known.set(String(m.id), { 
         id: m.id, 
